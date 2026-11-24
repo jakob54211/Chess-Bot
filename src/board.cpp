@@ -3,10 +3,17 @@
 #include <tuple>
 #include <vector>
 
+struct Move {
+    uint8_t from;
+    uint8_t to;
+};
+
 class Board {
 public:
     void set_start_position();
     void print_board();
+    void make_move(Move move);
+    std::vector<Move> legal_moves(bool colour);
 
 private:
     std::tuple<bool, int> piece_at(uint8_t square);
@@ -16,7 +23,7 @@ private:
     std::vector<uint8_t> pawn_moves(uint8_t square);
     std::vector<uint8_t> queen_moves(uint8_t square);
     std::vector<uint8_t> king_moves(uint8_t square);
-    std::vector<uint8_t> all_valid_moves(bool colour);
+    std::vector<Move> candidate_moves(bool colour);
     bool is_in_check(bool colour);
 
 struct Pieces {
@@ -95,9 +102,7 @@ void Board::print_board() {
             int square = rank * 8 + (7 - file);
             auto [is_white, piece] = piece_at(square);
 
-            char symbol = is_white
-                ? white_symbols[piece]
-                : black_symbols[piece];
+            char symbol = is_white ? white_symbols[piece] : black_symbols[piece];
 
             std::cout << symbol << ' ';
         }
@@ -319,50 +324,140 @@ std::vector<uint8_t> Board::queen_moves(uint8_t square) {
     return valid_moves;
 }
 
-std::vector<uint8_t> Board::all_valid_moves(bool colour) {
-    uint64_t all_pieces;
-    if (colour) {
-        all_pieces = black.pawns | black.knights | black.bishops |
-                    black.rooks | black.queens | black.king;
-    } else {
-        all_pieces = white.pawns | white.knights | white.bishops |
-                    white.rooks | white.queens | white.king;
+std::vector<uint8_t> Board::king_moves(uint8_t square) {
+    std::vector<uint8_t> valid_moves;
+
+    auto [player_colour, piece] = piece_at(square);
+
+    int row = square / 8;
+    int col = square % 8;
+
+    const int offsets[8][2] = {
+        { 1,  0}, {-1,  0}, { 0,  1}, { 0, -1},
+        { 1,  1}, { 1, -1}, {-1,  1}, {-1, -1}
+    };
+
+    for (const auto& [dr, dc] : offsets) {
+        int new_row = row + dr;
+        int new_col = col + dc;
+
+        if (new_row < 0 || new_row >= 8 ||
+            new_col < 0 || new_col >= 8) {
+            continue;
+        }
+
+        uint8_t target = static_cast<uint8_t>(new_row * 8 + new_col);
+        auto [target_colour, target_piece] = piece_at(target);
+
+        if (target_piece == 0) {
+            valid_moves.push_back(target);
+        } else if (target_colour != player_colour) {
+            valid_moves.push_back(target);
+        }
     }
 
-    std::vector<uint8_t> all_valid_moves;
+    return valid_moves;
+}
+
+std::vector<Move> Board::candidate_moves(bool colour) {
+    const Pieces& side = colour ? white : black;
+    uint64_t all_pieces = side.pawns | side.knights | side.bishops |
+                          side.rooks | side.queens | side.king;
+
+    std::vector<Move> moves;
     std::vector<uint8_t> temp;
 
-    for (size_t i = 0; i < 64; i++) {
-        if (1ULL << i & (all_pieces)) {
-            auto [colour, piece] = piece_at(i);
+    for (uint8_t i = 0; i < 64; i++) {
+        if ((1ULL << i) & all_pieces) {
+            auto [piece_colour, piece] = piece_at(i);
 
             switch (piece) {
+                case 1: temp = pawn_moves(i); break;
                 case 2: temp = knight_moves(i); break;
                 case 3: temp = bishop_moves(i); break;
                 case 4: temp = rook_moves(i); break;
                 case 5: temp = queen_moves(i); break;
+                case 6: temp = king_moves(i); break;
                 default: continue;
             }
 
             for (uint8_t target : temp) {
-                all_valid_moves.push_back(target);
+                moves.push_back({i, target});
             }
         }
     }
-    return all_valid_moves;
+    return moves;
 }
 
 bool Board::is_in_check(bool colour) {
 
-    auto all_moves = all_valid_moves(colour);
+    auto all_moves = candidate_moves(!colour);
     uint64_t king = colour ? white.king : black.king;
 
-    for (uint8_t target : all_moves) {
-        if (king & (1ULL << target)) {
+    for (Move move : all_moves) {
+        if (king & (1ULL << move.to)) {
             return true;
         }
     }
     return false;
+}
+
+std::vector<Move> Board::legal_moves(bool colour) {
+    std::vector<Move> moves;
+    uint64_t enemy_king = colour ? black.king : white.king;
+
+    for (Move move : candidate_moves(colour)) {
+        if (enemy_king & (1ULL << move.to)) {
+            continue;
+        }
+
+        Board copy = *this;
+        copy.make_move(move);
+        if (!copy.is_in_check(colour)) {
+            moves.push_back(move);
+        }
+    }
+
+    return moves;
+}
+
+void Board::make_move(Move move) {
+    if (move.from >= 64 || move.to >= 64) {
+        return;
+    }
+
+    auto [is_white, piece] = piece_at(move.from);
+    auto [target_is_white, target_piece] = piece_at(move.to);
+
+    if (piece == 0 || target_piece == 6 ||
+        (target_piece != 0 && target_is_white == is_white)) {
+        return;
+    }
+
+    Pieces& side = is_white ? white : black;
+    Pieces& opponent = is_white ? black : white;
+
+    const uint64_t from_bit = 1ULL << move.from;
+    const uint64_t to_bit = 1ULL << move.to;
+
+    // Ta bort motståndarens pjäs om målrutan är upptagen.
+    switch (target_piece) {
+        case 1: opponent.pawns   &= ~to_bit; break;
+        case 2: opponent.knights &= ~to_bit; break;
+        case 3: opponent.bishops &= ~to_bit; break;
+        case 4: opponent.rooks   &= ~to_bit; break;
+        case 5: opponent.queens  &= ~to_bit; break;
+    }
+
+    // Töm startrutan och sätt pjäsen på målrutan.
+    switch (piece) {
+        case 1: side.pawns   &= ~from_bit; side.pawns   |= to_bit; break;
+        case 2: side.knights &= ~from_bit; side.knights |= to_bit; break;
+        case 3: side.bishops &= ~from_bit; side.bishops |= to_bit; break;
+        case 4: side.rooks   &= ~from_bit; side.rooks   |= to_bit; break;
+        case 5: side.queens  &= ~from_bit; side.queens  |= to_bit; break;
+        case 6: side.king    &= ~from_bit; side.king    |= to_bit; break;
+    }
 }
 
 int main() {
